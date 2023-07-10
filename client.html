@@ -1,0 +1,647 @@
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+    <title>Minigolf</title>
+    <link rel = "stylesheet" type = "text/css" href = "/css/styles.css" />
+  </head>
+
+  <body>
+    <a href="/"><img src="/img/home_button.gif"></img></a>
+    <h1 class="center">Joe's MiniGolf</h1>
+    <h3 class="center">(A Jippii minigolf reboot)</h3>
+    <canvas id="gc" width="1024" height="576"></canvas>
+  <script>
+
+// FUTURE OPTIMIZATIONS
+// Only check ball/poly collisions if ball moving
+
+// test2_orig replaces poly collision test with bounceBallOffPoly(poly, ball); investigate this
+// Either do args or do global. Quit mixing the 2 in your functions
+// SYNC!!!
+// ballballCOllosion function takes args and doesn't use them
+
+updating = true; // Continue drawing frames
+map = null;
+gameActive = false;
+myTurn = false;
+shotTaken = false; // Has the shot been taken this turn?
+viewingActive = false; // Watching opponents turn
+
+force = null; // To store shot force for upcoming shot report
+ball1_in_hole = null; // Also for shot report
+ball2_in_hole = null;
+my_score = 0;
+their_score = 0;
+overlapping = false; // Balls were placed overlapping (which causes a huge problem mathematically)
+inclineSpeed = 0.4;
+
+
+
+// ************************ WEBSOCKET STUFFS *********************
+
+// if user is running mozilla then use it's built-in WebSocket
+      window.WebSocket = window.WebSocket || window.MozWebSocket;
+
+      var connection = new WebSocket('ws://localhost:8765');
+
+      connection.onopen = function () {
+        sendMsg("ready");
+      };
+
+      connection.onerror = function (error) {
+        // an error occurred when sending/receiving data
+      };
+
+      
+      connection.onmessage = function (message) {
+        var data = JSON.parse(message.data);
+        if (data.type == "message") {
+          console.log(data.msg);
+          
+          // **** MESSAGES ****
+          if (data.msg == "go") {
+      
+            if (!ball.active) { // Place the ball if this is your first turn
+              ball = Ball(map.start.x, map.start.y);
+              ball.active = true;
+            }
+            shotTaken = false;
+            myTurn = true;
+          }
+
+          else if (data.msg == "game_over") {
+            if (my_score > their_score)
+              endMessage("You win!");
+            else if (my_score == their_score)
+              endMessage("Tie!");
+            else
+              endMessage("LOSER!!!");
+          }
+        }
+
+        else if (data.type == "shot") {
+            if (!ball2.active) { // Place ball if this is opponents first turn
+              ball2 = Ball(map.start.x, map.start.y);
+              ball2.active = true;
+            }
+            console.log(data)
+            ball2.turn_start = ball2.pos;
+            ball2.velocity = Vector(data.x, data.y); // opponents shot
+            viewingActive = true;
+            their_score += 1; 
+        }   
+
+        else if (data.type == "map") {
+          console.log("Recieving map");
+          ball1_in_hole = false; // Reset the hole status
+          ball2_in_hole = false;
+          map = Map(data.polygons, data.color, Vector(data.start.x, data.start.y), Vector(data.hole.x, data.hole.y), data.name, data.author);
+
+          // Convert JSON verts to Vector objects
+          for (i = 0; i < map.polygons.length; i++) {
+            for (j = 0; j < map.polygons[i].verts.length; j++)
+              map.polygons[i].verts[j] = Vector(map.polygons[i].verts[j].x, map.polygons[i].verts[j].y);
+          }    
+
+          ball.turn_start = map.start; // In case ball goes in water                       
+          ball2.turn_start = map.start;
+
+          console.log("Map parsed");
+          gameActive = true;
+
+          // Map loaded and ready
+          sendMsg("map_loaded")
+          
+        }
+
+        else
+          console.log("Invalid transmission");
+      };
+
+      function sendMsg(msg) {
+        connection.send(JSON.stringify({"type":"message", "msg":msg}));
+      }
+
+      function sendShotReport() {
+        var report = shotReport(force, ball.pos, ball2.pos, ball1_in_hole, ball2_in_hole);
+        connection.send(JSON.stringify(report));
+      }
+
+      function shotReport(shotVector, finalPos1, finalPos2, hole1, hole2) {
+        var s = {
+          type:"shot_report",
+		      shot_vector:shotVector,
+		      final_pos1:finalPos1,
+          final_pos2:finalPos2,
+          hole1:hole1,
+          hole2:hole2
+        }
+      return s;
+      }
+
+      function sendShot(vector) {
+        connection.send(JSON.stringify(shot(vector.x, vector.y)));
+      }  
+
+      function shot(x, y) {
+        var s = {
+          type:"shot",
+          x:x,
+          y:y
+        }
+        return s;
+      }
+      
+
+// ***************************************************************
+
+
+
+window.onload = function() {
+	c = document.getElementById('gc');
+	cc = c.getContext('2d');
+	setInterval(update, 1000/60);
+	
+	height = 576;
+	width = 1024;
+    bannerHeight = 64;
+	
+	//map = buildTestMap();
+	ball = Ball(0, 0);
+	ball2 = Ball(10, 10);
+	
+	mousePos = null;
+	
+	c.addEventListener('mousemove', function(evt) {
+		mousePos = getMousePos(c, evt);
+		//console.log('Mouse position: ' + mousePos.x + ',' + mousePos.y);
+	}, false);
+	
+	c.addEventListener('mousedown', function(evt) {
+		if (myTurn && !shotTaken)
+		{
+      ball.turn_start = ball.pos;
+			var forceVector = mousePos.sub(ball.pos);
+			forceVector = forceVector.mult(1/10);
+			ball.velocity = forceVector;
+      force = forceVector; // To send in report
+      shotTaken = true;
+      sendShot(forceVector);
+      my_score += 1;
+ 
+		}
+	}, false);
+}
+
+function shotActive() {
+  if (ball != null && ball.moving())
+    return true;
+  else if (ball2 != null && ball2.moving())
+    return true;
+  else
+    return false;
+}
+
+function handlePolyCollisions(ball) {
+	// Check collisions with polygons
+	for (i = 0; i < map.polygons.length; i++) {
+		poly = map.polygons[i];
+
+    if (poly.type == "passable") // No need to check
+      continue;
+
+		if (Collision(poly, ball)) {
+
+      if (poly.type == "solid") {
+		
+			  var v = ball.velocity;
+			  var n = closestEdge(poly, ball);
+			  n = n.perp().normalize();
+			  var nDotv = n.dot(v);
+			  n = n.mult(2 * nDotv);
+			  v = n.sub(v);
+			  v = v.mult(-1);
+			
+			  ball.velocity = v;
+			  ball.pos = ball.prevPos;
+			  ball.update();
+
+        // This stops the ball from sliding along the polygon edge
+        if (Collision(poly, ball)) {
+				ball.pos = ball.prevPos;
+				ball.velocity = v.mult(-1);
+				ball.update();
+			  }
+        continue;
+      }
+    }
+
+    // Collision for these types is based on the center of the ball, not the outer border
+    if (inside(ball.pos.x, ball.pos.y, poly))
+    {
+      if (poly.type == "water") {
+        ball.velocity = Vector(0, 0);
+        ball.pos = ball.turn_start;
+      }
+      else if (poly.type == "sandpit")
+        ball.velocity = ball.velocity.sub(ball.velocity.mult(0.05));
+
+      else if (poly.type == "incline_u")
+        ball.velocity = ball.velocity.add(Vector(0, 1).mult(inclineSpeed));
+
+      else if (poly.type == "incline_r")
+        ball.velocity = ball.velocity.add(Vector(-1, 0).mult(inclineSpeed));
+
+      else if (poly.type == "incline_d")
+        ball.velocity = ball.velocity.add(Vector(0, -1).mult(inclineSpeed));
+
+      else if (poly.type == "incline_l")
+        ball.velocity = ball.velocity.add(Vector(1, 0).mult(inclineSpeed));
+
+      else if (poly.type == "incline_ur")
+        ball.velocity = ball.velocity.add(Vector(-0.70710678118, 0.70710678118).mult(inclineSpeed));
+
+      else if (poly.type == "incline_dr")
+        ball.velocity = ball.velocity.add(Vector(-0.70710678118, -0.70710678118).mult(inclineSpeed));
+
+      else if (poly.type == "incline_dl")
+        ball.velocity = ball.velocity.add(Vector(0.70710678118, -0.70710678118).mult(inclineSpeed));
+
+      else if (poly.type == "incline_ul")
+        ball.velocity = ball.velocity.add(Vector(0.70710678118, 0.70710678118).mult(inclineSpeed));
+    } 
+	}	
+}
+
+function handleBallBallCollisions(ball1, ball2) {
+	// TODO take out extra unecessary variables
+
+	// Check collisions with other ball (Google 2-Dimensional Elastic Collisions without Trigonometry by Chad Berchek for reference)
+	if (ball.pos.sub(ball2.pos).length() < ball.radius * 2) { // if dist between balls is less than the radius
+
+    if (overlapping)
+      return;
+
+    // If non-moving balls happened to be placed overlapping
+    if (ball1.velocity.length() == 0 && ball2.velocity.length() == 0) {
+      overlapping = true;
+      return;
+    }
+		
+		// Dont want the balls overlapping, back them up to their previous position
+		ball1.pos = ball1.prevPos;
+		ball2.pos = ball2.prevPos;
+	
+		var n = ball.pos.sub(ball2.pos).normalize(); // normal
+		var t = Vector(-n.y, n.x); // tangent
+		
+		// Find normal and tengential components
+		var v1n = n.dot(ball.velocity);
+		var v1t = t.dot(ball.velocity);
+		
+		var v2n = n.dot(ball2.velocity);
+		var v2t = t.dot(ball2.velocity);
+		
+		// Find the new normal velocity (tangential remains the same)
+		var v1n_new_scalar = v2n;
+		var v2n_new_scalar = v1n;
+		
+		// Convert scalar normal and tangential velocities into vectors
+		var v1n_new = n.mult(v1n_new_scalar);
+		var v1t_new = t.mult(v1t);
+		
+		var v2n_new = n.mult(v2n_new_scalar);
+		var v2t_new = t.mult(v2t);
+		
+		// Calculate new velocity vector
+		ball1.velocity = v1n_new.add(v1t_new);
+		ball2.velocity = v2n_new.add(v2t_new);
+	}
+  else
+    overlapping = false;
+}
+
+function handleHoleCollision(ball1, ball2, hole) {
+  if (ball1.velocity.length() < 2 && ball1.active && hole.sub(ball1.pos).length() < 12)  {
+    ball1_in_hole = true;
+    ball.velocity = Vector(0, 0);
+    ball.active = false;
+  }
+
+  if (ball2.velocity.length() < 2 && ball2.active && hole.sub(ball2.pos).length() < 12) {
+    ball2_in_hole = true;
+    ball2.velocity = Vector(0, 0);
+    ball2.active = false;
+  }
+}
+
+function update() {
+
+  if (!updating)
+    return;
+
+  if (!gameActive) {
+    drawWaitingScreen();
+    return;
+  }
+
+  // *** Collisions ***
+  if (ball.active) {
+    ball.update();
+    handlePolyCollisions(ball);
+  }
+
+  if (ball2.active) {
+    ball2.update();
+    handlePolyCollisions(ball2);
+  }
+
+  if (ball.active && ball2.active) {
+    handleBallBallCollisions(ball, ball2);
+  }
+
+  handleHoleCollision(ball, ball2, map.hole);
+	
+  // *** Rendering ***
+	drawScene(map, ball, ball2);
+	
+	if (myTurn && !shotTaken) // Aim mode
+		drawAim(cc, ball, mousePos);
+
+  if (myTurn && shotTaken && !shotActive()) { // Turn is over and balls are done rolling, send shot report
+    myTurn = false;
+    sendShotReport();
+    console.log("Shot report sent");
+  }
+
+  if (viewingActive && !shotActive()) { // Watching opponents turn
+    viewingActive = false;
+    sendMsg("viewing_complete");
+  }  
+
+}
+
+function Vector(newX, newY) {
+	var v = {
+		x:newX,
+		y:newY,
+		length: function() { return Math.sqrt(this.x*this.x + this.y*this.y); },
+		dot: function(w) { return this.x * w.x + this.y * w.y; },
+		mult: function(s) { return Vector(s * this.x, s * this.y); },
+		sub: function(w) { return Vector(this.x - w.x, this.y - w.y); },
+		add: function(w) { return Vector(this.x + w.x, this.y + w.y); },
+		perp: function() { return Vector(-this.y, this.x); },
+		normalize: function() { return Vector(this.x, this.y).mult(1 / Math.sqrt(this.x*this.x + this.y*this.y)); }
+	};
+	return v;
+}
+
+function distToEdge(p, v, w) {
+// p is point, v1 an v2 are vertices of edge
+	
+	var vw = w.sub(v);
+	var vp = p.sub(v);
+	var wp = p.sub(w);
+	var wv = v.sub(w);
+	
+	if (vp.dot(vw) < 0)
+		//return vp.length();
+		return 99999;
+	else if (wp.dot(wv) < 0)
+		//return wp.length();
+		return 99999;
+		
+	else
+	{
+		var vw_perp = vw.perp().normalize();
+		return Math.abs(vw_perp.dot(vp));
+	}
+}
+
+function Polygon(vertices, color, type) {
+	var p = {
+		verts:vertices,
+		color:color,
+		type:type
+	}
+	return p;
+}
+
+function Map(polygons, defaultColor, start, hole, name, author) {
+	var m = {
+		polygons:polygons,
+		color:defaultColor,
+    start:start,
+    hole:hole,
+    name:name,
+    author:author
+	}
+	return m;
+}
+
+function Ball(x, y) {
+	var b = {
+		pos: Vector(x, y),
+		prevPos: Vector(x, y),
+		velocity: Vector(0,0),
+		radius: 5,
+    active: false,
+    turn_start: null, // in case ball goes in water
+		moving: function() {
+      if (this.velocity.x == 0 && this.velocity.y == 0)
+        return false;
+      else
+        return true;
+    },
+		update: function() { 
+						
+			this.prevPos = this.pos;
+			this.pos = this.pos.add(this.velocity);
+			
+            // Apply friction
+            this.velocity = this.velocity.add(this.velocity.mult(-0.015));
+			if (this.velocity.length() < .1)
+			{
+				this.velocity = Vector(0, 0);
+			}
+			
+			if (this.pos.x < this.radius)
+			{
+				this.velocity.x = -this.velocity.x;
+				this.pos.x = this.radius;
+			}
+			
+			if (this.pos.x > width - this.radius)
+			{
+				this.velocity.x = -this.velocity.x;
+				this.pos.x = width - this.radius;
+			}
+			
+			if (this.pos.y < this.radius + bannerHeight)
+			{
+				this.velocity.y = -this.velocity.y; 
+				this.pos.y = this.radius + bannerHeight;
+			}
+			
+			if (this.pos.y > height - this.radius)
+			{
+				this.velocity.y = -this.velocity.y; 
+				this.pos.y = height - this.radius;
+			}
+		}
+	}
+	return b;
+}
+
+function drawMap(map) {
+	cc.fillStyle = map.color;
+	cc.fillRect(0, 0, width, height);
+	for (i = 0; i < map.polygons.length; i++) { // For every polygon
+		cc.fillStyle = map.polygons[i].color;
+		cc.beginPath();
+		cc.moveTo(map.polygons[i].verts[0].x, map.polygons[i].verts[0].y);
+		for (j = 1; j < map.polygons[i].verts.length; j++ ) { // For every vertex
+			cc.lineTo(map.polygons[i].verts[j].x, map.polygons[i].verts[j].y);
+		}
+		cc.closePath();
+		cc.fill();
+	}
+
+  drawHole(map.hole);
+
+  cc.fillStyle = "#ffcc66";
+	cc.fillRect(0, 0, width, bannerHeight);
+
+  cc.fillStyle = "black";
+  cc.font = "12px Arial";
+  cc.fillText("Course: " + map.name, 10, 15);
+  cc.fillText("By: " + map.author, 10, 35);
+  cc.fillText("Your Score: " + my_score, 300, 15);
+  cc.fillText("Opponent's Score: " + their_score, 300, 35);
+
+}
+
+function drawWaitingScreen() {
+  cc.fillStyle = "green";
+  cc.fillRect(0, 0, width, height);
+
+  cc.fillStyle = "black";
+  cc.font = "64px Arial";
+  cc.fillText("Waiting for other players...", width/2 - 400, height/2);
+}
+
+function drawBall(ball) {
+	cc.fillStyle = 'white';
+	cc.beginPath();
+	cc.arc(ball.pos.x, ball.pos.y, ball.radius, 0, Math.PI*2, true); 
+	cc.closePath();
+	cc.fill();
+}
+
+function drawHole(hole) {
+	cc.fillStyle = 'black';
+	cc.beginPath();
+	cc.arc(hole.x, hole.y, 7, 0, Math.PI*2, true); 
+	cc.closePath();
+	cc.fill();
+}
+
+function drawScene(map, ball1, ball2) {
+	drawMap(map);
+	
+  if (ball1.active)
+    drawBall(ball1);
+
+  if (ball2.active)
+	  drawBall(ball2);
+	
+	
+}
+
+
+function inside(x, y, polygon) {
+	var vs = polygon.verts;
+    var inside = false;
+
+    for (var i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+        var xi = vs[i].x, yi = vs[i].y;
+        var xj = vs[j].x, yj = vs[j].y;
+
+        var intersect = ((yi > y) != (yj > y))
+            && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+
+    return inside;
+}
+
+function Collision(polygon, ball) {
+
+	// Check edge between last and first vert that loop wont touch
+	if (distToEdge(ball.pos, polygon.verts[polygon.verts.length-1], polygon.verts[0]) <= ball.radius) {
+		return true;
+	}
+	// Check remaining edges
+	
+	for (j = 0; j < polygon.verts.length-1; j++) {
+		if (distToEdge(ball.pos, polygon.verts[j], polygon.verts[j+1]) <= ball.radius) {
+			return true;
+		}
+	}
+	
+	if (inside(ball.pos.x, ball.pos.y, polygon)) {
+		return true;
+	}
+	
+	return false;
+}
+
+function closestEdge(polygon, ball) {
+	var minDistance = distToEdge(ball.pos, polygon.verts[polygon.verts.length-1], polygon.verts[0]);
+	var edge = polygon.verts[0].sub(polygon.verts[polygon.verts.length-1]);
+	
+	for (j = 0; j < polygon.verts.length-1; j++) {
+		var distance = distToEdge(ball.pos, polygon.verts[j], polygon.verts[j+1]);
+		if (distance < minDistance) {
+			edge = polygon.verts[j+1].sub(polygon.verts[j]);
+			minDistance = distance;
+		}
+	}
+	
+	return edge;
+}
+
+function drawAim(cc, ball, mousePos) {
+
+  // We don't want the aim line to be too long
+  var direction = mousePos.sub(ball.pos);
+  if (direction.length() > 80) {
+    var endPoint = direction.normalize().mult(80).add(ball.pos);
+  }
+  else
+    endPoint = mousePos;
+
+	cc.beginPath();
+	cc.moveTo(ball.pos.x, ball.pos.y);
+	cc.lineTo(endPoint.x, endPoint.y);
+	cc.strokeStyle = 'white';
+	cc.stroke();
+	//console.log("drawing line from", ball.x, ball.y, mousePos.x, mousePos.y);
+}
+
+function getMousePos(canvas, evt) {
+    var rect = canvas.getBoundingClientRect();
+    return Vector(evt.clientX - rect.left, evt.clientY - rect.top);
+
+}
+
+function endMessage(text) {
+  updating = false;
+  cc.fillStyle = "black";
+  cc.font = "72px Arial";
+  cc.fillText(text, 100, 200);
+}
+
+    </script>
+  </body>
+</html>

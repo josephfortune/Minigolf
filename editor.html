@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>MiniGolf Course Editor</title>
+    <link rel = "stylesheet" type = "text/css" href = "/css/styles.css" />
+  </head>
+
+  <body>
+  <div class="center">
+    <input type = "text" id = "colorBox" value = "white" />
+    <select id="typeMenu">
+      <option value="solid">Solid</option>
+      <option value="passable">Passable</option>
+      <option value="water">Water</option>
+      <option value="sandpit">Sandpit</option>
+      <option value="incline_r">Incline Right</option>
+      <option value="incline_l">Incline Left</option>
+      <option value="incline_u">Incline Up</option>
+      <option value="incline_d">Incline Down</option>
+      <option value="incline_ur">Incline Up/Right</option>
+      <option value="incline_dr">Incline Down/Right</option>
+      <option value="incline_dl">Incline Down/Left</option>
+      <option value="incline_ul">Incline Up/Left</option>
+    </select> 
+    <a id="myButton" href="#">Save Course</button>
+  </div>
+  <canvas id="gc" width ="1024" height="576"></canvas>
+  
+  
+  
+    <script>
+      width = 1024;
+      height = 576;
+      bannerHeight = 64;
+      gridFactor = 32;
+
+      var modes = {POLYGON: 1, HOLE: 2, START: 3};
+      mode = modes.POLYGON; // default to polygon mode
+
+      mousePos = null;
+      snapMode = true;
+      drawingStarted = false;
+      currentVerts = [];
+      polys = [];
+      cursor = null;
+      buttons = { polygon: Button("Polygon", buttonPolygon, 10, 10), 
+                  hole: Button("Hole", buttonHole, 100, 10),
+                  start: Button("Start", buttonStart, 160, 10),
+                  undo: Button("Undo", buttonUndo, 270, 10),
+                  minus: Button(" - ", buttonMinus, 320, 10),
+                  plus: Button(" + ", buttonPlus, 360, 10)};
+      hole = Vector(64, 128);
+      ballStart = Vector(64, 256);
+
+      window.onload = function() {
+        // Canvas
+	      c = document.getElementById('gc');
+	      cc = c.getContext('2d');
+	      setInterval(update, 1000/60);
+
+        // Textbox
+        var colorBox = document.getElementById('colorBox');   
+
+        // Dropdown box
+        var typeMenu = document.getElementById('typeMenu');   
+
+        c.addEventListener('mousemove', function(evt) {
+		      mousePos = getMousePos(c, evt);
+		      
+	      }, false);
+
+        c.addEventListener('mousedown', function(evt) {
+
+          if (mousePos.y > bannerHeight) { // If mouse is not in the banner
+            if (mode == modes.POLYGON) {
+              if (!drawingStarted) {
+		            drawingStarted = true;
+                console.log("Starting new polygon");
+              }
+              newVert = Vector(cursor.x, cursor.y);
+              
+              // Check to see if that vertex is already in the last (polygon is complete)
+              polygonComplete = false;
+              if (currentVerts.length > 2) { // cant have a polygon with only 2 verts
+                for (i = 0; i < currentVerts.length; i++) {
+                  if (currentVerts[i].x == newVert.x && currentVerts[i].y == newVert.y) {
+                    polygonComplete = true
+                    break;
+                  }
+                }
+              }
+
+              if (polygonComplete) { // This completes a polygon
+                var color = getColorByType(typeMenu.value);
+                polys.push(Polygon(currentVerts, color, typeMenu.value));
+                currentVerts = [];
+                drawingStarted = false;
+                console.log("Polygon complete");
+              }
+              else {
+                currentVerts.push(newVert); 
+                console.log("Adding vertex");
+              }
+            }
+            else if (mode == modes.HOLE) {
+              hole = cursor;
+            } 
+            else if (mode == modes.START) {
+              ballStart = cursor;
+            }
+          }
+          else { // Click is within the banner
+            checkClickAgainstButtons(mousePos.x, mousePos.y);
+          }  
+   
+	      }, false);
+
+        document.getElementById('myButton').onclick = function(event){
+          map = Map(polys, "green", ballStart, hole, "Name", "Author");
+          var json = JSON.stringify(map),
+          blob = new Blob([json], {type: "octet/stream"}),
+          url = window.URL.createObjectURL(blob);
+        
+        	this.href = url;
+          this.target = '_blank';
+        	
+        	// target filename
+          this.download = 'my-download.json';
+        }
+      }
+
+      function checkClickAgainstButtons(x, y) {
+        for (var button in buttons) {
+          b = buttons[button];
+          if (x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height) {
+            b.handler();
+          }
+        }
+      }
+
+      function getMousePos(canvas, evt) {
+        var rect = canvas.getBoundingClientRect();
+        return {
+          x: evt.clientX - rect.left,
+          y: evt.clientY - rect.top
+        };
+      }
+
+      function nearest(x) { // For snap mode
+        above = Math.ceil(x/gridFactor) * gridFactor;
+        below = Math.floor(x/gridFactor) * gridFactor;
+        
+        if (above - x > x - below)
+          return below;
+        else
+          return above;
+      }
+
+      function drawCursor(x, y) {
+        cc.fillStyle = 'white';
+	      cc.beginPath();
+	      cc.arc(x, y, 2, 0, Math.PI*2, true); 
+	      cc.closePath();
+	      cc.fill();
+      }
+
+      function drawBackground() {
+        cc.fillStyle = "green";
+	      cc.fillRect(0, 0, width, height);
+      }
+
+      function drawPoly(poly) {
+	      cc.fillStyle = poly.color;
+	      cc.beginPath();
+	      cc.moveTo(poly.verts[0].x, poly.verts[0].y);
+	      for (j = 1; j < poly.verts.length; j++ ) { // For every vertex
+		      cc.lineTo(poly.verts[j].x, poly.verts[j].y);
+	      }
+	      cc.closePath();
+	      cc.fill();
+	      
+      }
+
+      function Polygon(vertices, color, type) {
+	      var p = {
+		      verts:vertices,
+		      color:color,
+		      type:type
+	      }
+	      return p;
+      }
+
+      function drawBanner() {
+        cc.fillStyle = "#4b0082";
+	      cc.fillRect(0, 0, width, bannerHeight);
+
+        for (b in buttons)
+          drawButton(buttons[b]);
+
+        cc.fillStyle = "#add8e6";
+        cc.font = "16px Arial";
+        cc.fillText("Joe's MiniGolf Course Editor V1.0", 500, 30);
+
+      }
+    
+      function drawGrid() {
+        // Verticals
+        for (i = gridFactor; i < width; i += gridFactor) {
+          cc.beginPath();
+          cc.moveTo(i, bannerHeight);
+          cc.lineTo(i, height);
+          cc.strokeStyle = "#1cb828"
+          cc.lineWidth = 0.5;
+          cc.stroke();
+        }
+
+        // horizontals
+        for (i = gridFactor; i < height; i += gridFactor) {
+          if (i < bannerHeight) continue;
+          cc.beginPath();
+          cc.moveTo(0, i);
+          cc.lineTo(width, i);
+          cc.stroke();
+        }
+      }
+
+      function drawButton(button) {
+
+        if (button.selected)
+          cc.fillStyle = "#f08080";
+        else
+          cc.fillStyle = "#add8e6";
+	      cc.fillRect(button.x, button.y, button.width, button.height);
+
+        cc.fillStyle = "black";
+        cc.font = "12px Arial";
+        cc.fillText(button.text, button.x+10, button.y+10);
+      }
+
+      function Button(text, handler, x, y) {
+        var b = {
+                  text:text,
+                  x:x,
+                  y:y,
+                  width: text.length * 10,
+                  height: 20,
+                  selected: false,
+                  handler: handler
+        }
+        return b;
+      }
+
+      function drawOutline(verts) {
+        cc.fillStyle = "black";
+        cc.beginPath();
+
+        if (currentVerts.length > 0) { // Only draw if there is more than one vert
+          cc.moveTo(currentVerts[0].x, currentVerts[0].y);
+          for (i = 1; i < currentVerts.length; i++) {
+            cc.lineTo(currentVerts[i].x, currentVerts[i].y);  
+          }
+          cc.lineTo(cursor.x, cursor.y);
+          cc.strokeStyle = "#d3d3d3";
+          cc.lineWidth = 2;
+          cc.stroke();
+        }
+      }
+  
+      function drawHole() {
+	      cc.fillStyle = 'black';
+	      cc.beginPath();
+	      cc.arc(hole.x, hole.y, 7, 0, Math.PI*2, true); 
+	      cc.closePath();
+	      cc.fill();
+      }
+  
+      function drawBall(ball) {
+	      cc.fillStyle = 'white';
+	      cc.beginPath();
+	      cc.arc(ballStart.x, ballStart.y, 5, 0, Math.PI*2, true); 
+	      cc.closePath();
+	      cc.fill();
+      }
+
+      function Vector(newX, newY) {
+	      var v = {
+		      x:newX,
+		      y:newY,
+		      length: function() { return Math.sqrt(this.x*this.x + this.y*this.y); },
+		      dot: function(w) { return this.x * w.x + this.y * w.y; },
+		      mult: function(s) { return Vector(s * this.x, s * this.y); },
+		      sub: function(w) { return Vector(this.x - w.x, this.y - w.y); },
+		      add: function(w) { return Vector(this.x + w.x, this.y + w.y); },
+		      perp: function() { return Vector(-this.y, this.x); },
+		      normalize: function() { return Vector(this.x, this.y).mult(1 / Math.sqrt(this.x*this.x + this.y*this.y)); }
+	      };
+	      return v;
+      }
+
+      function Map(polygons, defaultColor, start, hole, name, author) {
+	      var m = {
+          type:"map",
+		      polygons:polygons,
+		      color:defaultColor,
+          hole:hole,
+          start:start,
+          name:name,
+          author:author
+	      }
+	      return m;
+      }
+
+      function buttonHole() {
+        mode = modes.HOLE;
+        buttons.start.selected = false;
+        buttons.hole.selected = true;
+        buttons.polygon.selected = false;
+        console.log("Hole mode");
+      }
+
+      function buttonPolygon() {
+        mode = modes.POLYGON;
+        buttons.start.selected = false;
+        buttons.hole.selected = false;
+        buttons.polygon.selected = true;
+        console.log("Polygon mode");
+
+      }
+  
+      function buttonStart() {
+        mode = modes.START;
+        buttons.start.selected = true;
+        buttons.hole.selected = false;
+        buttons.polygon.selected = false;
+        console.log("Start mode");
+      }
+
+      function buttonUndo() {
+        polys.pop();
+      }
+
+      function buttonPlus() {
+        gridFactor /= 2;
+      }
+
+      function buttonMinus() {
+        gridFactor *= 2;
+      }
+
+      function getColorByType(type) {
+        if (type == "solid" || type == "passable")
+          return colorBox.value;
+    
+        else if (type == "water")
+          return "#155d91";
+
+        else if (type == "sandpit")
+          return "#f4b942";
+
+        else if (type == "incline_l" || type == "incline_ul")
+          return "#003800";
+
+        else if (type == "incline_u" || type == "incline_ur")
+          return "#004900";
+
+        else if (type == "incline_r" || type == "incline_dr")
+          return "#018c01";
+
+        else if (type == "incline_d" || type == "incline_dl")
+          return "#016601";
+      }
+
+      function update() {
+        drawBackground();
+        drawBanner();
+        drawGrid();
+        drawHole();
+        drawBall();
+
+        for (i = 0; i < polys.length; i++) {
+          drawPoly(polys[i]);
+        }
+
+        if (drawingStarted)
+          drawOutline(currentVerts);
+
+        if (snapMode) {
+          cursor = Vector(nearest(mousePos.x), nearest(mousePos.y));
+          drawCursor(cursor.x, cursor.y);
+        }
+
+      }
+      
+
+    </script>
+  </body>
+
+</html> 
