@@ -1,6 +1,11 @@
 import asyncio
 import websockets
 import json
+from os import listdir
+from os.path import isfile, join
+import random
+
+mapPath = "maps/"
 
 nPlayers = 0
 player1 = 0
@@ -27,49 +32,17 @@ async def broadcast(message):
   await sendMsg(player1, message)
   await sendMsg(player2, message)
 
-async def sendMap(websocket):
-  vert1 = {"x":256, "y":544}
-  vert2 = {"x":448, "y":352}
-  vert3 = {"x":448, "y":320}
-  vert4 = {"x":256, "y":96}
-  vert5 = {"x":224, "y":160}
-  vert6 = {"x":384, "y":320}
-  vert7 = {"x":384, "y":352}
-  vert8 = {"x":224, "y":480}
-
-  vert9 = {"x":544, "y":288}
-  vert10 = {"x":544, "y":224}
-  vert11 = {"x":480, "y":224}
-  vert12 = {"x":480, "y":288}
-  
-  vert13 = {"x":544, "y":448}
-  vert14 = {"x":544, "y":384}
-  vert15 = {"x":480, "y":384}
-  vert16 = {"x":480, "y":448}
-
-  vert17 = {"x":640, "y":544}
-  vert18 = {"x":800, "y":384}
-  vert19 = {"x":800, "y":288}
-  vert20 = {"x":640, "y":128}
-  vert21 = {"x":608, "y":192}
-  vert22 = {"x":736, "y":288}
-  vert23 = {"x":736, "y":384}
-  vert24 = {"x":608, "y":480}
-
-  verts1 = [vert1, vert2, vert3, vert4, vert5, vert6, vert7, vert8]
-  verts2 = [vert9, vert10, vert11, vert12]
-  verts3 = [vert13, vert14, vert15, vert16]
-  verts4 = [vert17, vert18, vert19, vert20, vert21, vert22, vert23, vert24]
-
-  poly1 = {"verts":verts1, "color":"red", "type":"solid"}
-  poly2 = {"verts":verts2, "color":"red", "type":"solid"}
-  poly3 = {"verts":verts3, "color":"red", "type":"solid"}  
-  poly4 = {"verts":verts4, "color":"red", "type":"solid"}
-  
-  polys = [poly1, poly2, poly3, poly4]
-  newMap = {"type":"map", "color": "green", "name":"Hello", "author":"Joe", "start":{"x":288, "y":341}, "hole":{"x":512, "y":336}, "polygons": polys}
-  await websocket.send(json.dumps(newMap))
-  print("Send map")
+def chooseRandomMap():
+  # Get list of maps
+  list = [f for f in listdir(mapPath) if isfile(join(mapPath, f))]
+  nextMapName = random.choice(list)
+  with open(mapPath + nextMapName) as f:
+    map = f.read()
+    return map
+    
+async def sendMap(websocket, map): 
+  await websocket.send(map)
+  print("Sending map")
 
 async def hello(websocket, path):
   global nPlayers
@@ -104,8 +77,9 @@ async def hello(websocket, path):
       await sendMsg(websocket, "Joining as player 2")
       
       print("Sending map...")
-      await sendMap(player1)
-      await sendMap(player2)
+      map = chooseRandomMap()
+      await sendMap(player1, map)
+      await sendMap(player2, map)
 
     # keep listening for future messages
     async for incoming in websocket:
